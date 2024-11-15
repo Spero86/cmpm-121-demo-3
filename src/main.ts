@@ -220,4 +220,4 @@ const state = initializeGameState();
 
 // Example Usage
 movePlayer(state, 1, 0); // Move north
-resetGame(state);
+resetGame(state); // reset
