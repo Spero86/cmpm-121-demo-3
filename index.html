@@ -3,19 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Geocoin Carrier</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="src/style.css">
   </head>
   <body>
     <div id="app">
-      <div id="controlPanel">
-        <button id="north" title="north">⬆️</button>
-        <button id="south" title="south">⬇️</button>
-        <button id="west" title="west">⬅️</button>
-        <button id="east" title="east">➡️</button>
-        <button id="reset" title="reset">🚮</button>
-        <button id="sensor" title="sensor">🌐</button>
-    </div>
-    <div id="statusPanel"></div>
-    <div id="map"></div>
+      <h1 class="app__title">Geocoin Carrier</h1>
+      <div id="controlPanel" class="app__control-panel">
+        <button id="moveNorth" class="control-panel__button">⬆️</button>
+        <button id="moveSouth" class="control-panel__button">⬇️</button>
+        <button id="moveWest" class="control-panel__button">⬅️</button>
+        <button id="moveEast" class="control-panel__button">➡️</button>
+        <button id="geolocate" class="control-panel__button">🌐</button>
+        <button id="reset" class="control-panel__button">🚮</button>
+      </div>
+      <div id="mapContainer" class="app__map-container">
+        <div id="map" class="map-container__map"></div>
+      </div>
+      <div id="cacheDetailPanel" class="app__cache-detail-panel"></div>
+      <div id="inventory" class="app__inventory"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

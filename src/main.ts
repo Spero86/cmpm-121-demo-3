@@ -4,37 +4,72 @@ import "./style.css";
 import "./leafletWorkaround.ts";
 import luck from "./luck.ts";
 
-// Interfaces
-interface LatLngCell {
+const PLAYER_LAT = 36.98949379578401;
+const PLAYER_LNG = -122.06277128548504;
+const TILE_DEGREES = 0.0001;
+const NEIGHBORHOOD_SIZE = 8;
+const CACHE_SPAWN_PROBABILITY = 0.1;
+
+interface Cell {
   i: number;
   j: number;
 }
 
-interface CacheCoin {
-  original: LatLngCell;
+interface Coin {
+  cell: Cell;
   serial: number;
 }
 
-interface GameState {
-  map: leaflet.Map;
-  playerMarker: leaflet.Marker;
-  playerPath: leaflet.LatLng[];
-  polyline: leaflet.Polyline;
-  playerPoints: number;
-  playerInventory: CacheCoin[];
-  cacheCoins: Map<string, CacheCoin[]>;
-  directions: HTMLDivElement;
-  geolocationWatchId: number | null;
+interface Cache {
+  cell: Cell;
+  coins: Coin[];
+  marker: leaflet.Marker;
+  toMemento(): string;
+  fromMemento(memento: string): void;
 }
 
-// Constants
-const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
-const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4;
-const NEIGHBORHOOD_SIZE = 8;
-const CACHE_SPAWN_PROBABILITY = 0.1;
+const caches: Map<string, Cache> = new Map();
+const knownTiles: Map<string, Cell> = new Map();
+let playerCoins: Coin[] = [];
+let playerLat = PLAYER_LAT;
+let playerLng = PLAYER_LNG;
 
-// Cache Icon
+let locationWatcher: number | null = null;
+let movementHistory: leaflet.Polyline | null = null;
+const locationHistory: [number, number][] = [];
+
+const map = leaflet.map("map", {
+  center: [PLAYER_LAT, PLAYER_LNG],
+  zoom: 19,
+  minZoom: 19,
+  maxZoom: 19,
+  zoomControl: false,
+  scrollWheelZoom: false,
+});
+
+leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution:
+    '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+
+const playerIcon = leaflet.icon({
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png",
+  shadowUrl:
+    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
+
+const playerMarker = leaflet.marker([PLAYER_LAT, PLAYER_LNG], {
+  icon: playerIcon,
+});
+playerMarker.bindTooltip("Current Location");
+playerMarker.addTo(map);
+
 const cacheIcon = leaflet.icon({
   iconUrl:
     "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
@@ -46,178 +81,361 @@ const cacheIcon = leaflet.icon({
   shadowSize: [41, 41],
 });
 
-// Initialize Game State
-function initializeGameState(): GameState {
-  const map = leaflet.map(document.getElementById("map")!, {
-    center: OAKES_CLASSROOM,
-    zoom: GAMEPLAY_ZOOM_LEVEL,
-    minZoom: GAMEPLAY_ZOOM_LEVEL,
-    maxZoom: GAMEPLAY_ZOOM_LEVEL,
-    zoomControl: false,
-    scrollWheelZoom: false,
+function latLngToCell(lat: number, lng: number): Cell {
+  const i = Math.floor(lat / TILE_DEGREES);
+  const j = Math.floor(lng / TILE_DEGREES);
+  const key = `${i},${j}`;
+  if (!knownTiles.has(key)) {
+    knownTiles.set(key, { i, j });
+  }
+  return knownTiles.get(key)!;
+}
+
+function initializeCache(
+  cell: Cell,
+  lat: number,
+  lng: number,
+  coins: Coin[],
+): Cache {
+  const cacheMarker = leaflet.marker([lat, lng], {
+    icon: cacheIcon,
   });
 
-  leaflet
-    .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution:
-        '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    })
-    .addTo(map);
+  const cache: Cache = {
+    cell,
+    coins,
+    marker: cacheMarker,
+    toMemento() {
+      return JSON.stringify(this.coins);
+    },
+    fromMemento(memento: string) {
+      this.coins = JSON.parse(memento);
+    },
+  };
 
-  const playerMarker = leaflet.marker(OAKES_CLASSROOM).addTo(map);
-  playerMarker.bindTooltip("That's you!");
+  cacheMarker.bindPopup(createCachePopup(cache));
+  return cache;
+}
 
-  const polyline = leaflet.polyline([OAKES_CLASSROOM], { color: "blue" }).addTo(
-    map,
+function createCache(cell: Cell, lat: number, lng: number) {
+  const coinCount = Math.floor(luck(`${cell.i},${cell.j},coins`) * 10);
+  const coins: Coin[] = Array.from(
+    { length: coinCount },
+    (_, serial) => ({ cell, serial }),
   );
 
-  return {
-    map,
-    playerMarker,
-    playerPath: [OAKES_CLASSROOM],
-    polyline,
-    playerPoints: 0,
-    playerInventory: [],
-    cacheCoins: new Map(),
-    directions: document.querySelector<HTMLDivElement>("#statusPanel")!,
-    geolocationWatchId: null,
-  };
+  const cache = initializeCache(cell, lat, lng, coins);
+
+  const cacheId = `${cell.i},${cell.j}`;
+  caches.set(cacheId, cache);
+  cache.marker.addTo(map);
 }
 
-// Utility Functions
-function latLngToCell(lat: number, lng: number): LatLngCell {
-  return {
-    i: Math.floor(lat * 1e4),
-    j: Math.floor(lng * 1e4),
-  };
-}
+function createCachePopup(cache: Cache): HTMLElement {
+  const container = document.createElement("div");
+  const coinList = cache.coins.map((coin) => {
+    const coinId = `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+    return `<span class="coin-id" style="cursor: pointer; text-decoration: underline;" 
+            data-lat="${coin.cell.i * TILE_DEGREES}" 
+            data-lng="${coin.cell.j * TILE_DEGREES}">${coinId}</span>`;
+  }).join(", ");
 
-function spawnCache(
-  state: GameState,
-  i: number,
-  j: number,
-  icon: leaflet.Icon | leaflet.DivIcon,
-): void {
-  const marker = leaflet
-    .marker([i * TILE_DEGREES, j * TILE_DEGREES], { icon })
-    .addTo(state.map);
+  const content = `
+    <div>
+      <p>Cache at (${cache.cell.i}, ${cache.cell.j})</p>
+      <p>Coins: <span id="coins-${cache.cell.i}-${cache.cell.j}">${coinList}</span></p>
+      <button class="collect-btn">Collect</button>
+      <button class="deposit-btn">Deposit</button>
+    </div>
+  `;
 
-  marker.bindPopup(() => {
-    const cacheKey = `${i},${j}`;
-    const coins = state.cacheCoins.get(cacheKey) ?? [];
-    if (coins.length === 0) {
-      const initialCoins = Math.floor(luck([i, j, "coins"].toString()) * 10);
-      for (let serial = 0; serial < initialCoins; serial++) {
-        coins.push({ original: { i, j }, serial });
-      }
-      state.cacheCoins.set(cacheKey, coins);
-    }
+  container.innerHTML = content;
 
-    const popupDiv = document.createElement("div");
-    const list = document.createElement("ul");
-    coins.forEach((coin, index) => {
-      const listItem = document.createElement("li");
-      listItem.innerHTML =
-        `${coin.original.i}:${coin.original.j}#${coin.serial}`;
-      const collectButton = document.createElement("button");
-      collectButton.innerHTML = "collect";
-      collectButton.addEventListener("click", () => {
-        coins.splice(index, 1);
-        state.playerPoints++;
-        state.playerInventory.push(coin);
-        state.cacheCoins.set(cacheKey, coins);
-        updatePopup();
-      });
-      listItem.appendChild(collectButton);
-      list.appendChild(listItem);
+  container.querySelectorAll(".coin-id").forEach((elem) => {
+    elem.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      const lat = parseFloat(target.dataset.lat || "0");
+      const lng = parseFloat(target.dataset.lng || "0");
+      map.setView([lat, lng]);
     });
-
-    popupDiv.innerHTML = `Cache ${cacheKey}`;
-    popupDiv.appendChild(list);
-
-    const depositButton = document.createElement("button");
-    depositButton.innerHTML = "deposit";
-    depositButton.addEventListener("click", () => {
-      if (state.playerPoints > 0 && state.playerInventory.length > 0) {
-        const coin = state.playerInventory.pop()!;
-        coins.push(coin);
-        state.playerPoints--;
-        state.cacheCoins.set(cacheKey, coins);
-        updatePopup();
-      }
-    });
-    popupDiv.appendChild(depositButton);
-
-    const updatePopup = () => {
-      state.directions.innerHTML = `${state.playerPoints} points accumulated.`;
-      list.innerHTML = "";
-      coins.forEach((coin) => {
-        const listItem = document.createElement("li");
-        listItem.innerHTML =
-          `${coin.original.i}:${coin.original.j}#${coin.serial}`;
-        const collectButton = document.createElement("button");
-        collectButton.innerHTML = "collect";
-        collectButton.addEventListener("click", () => {
-          coins.splice(coins.indexOf(coin), 1);
-          state.playerPoints++;
-          state.playerInventory.push(coin);
-          state.cacheCoins.set(cacheKey, coins);
-          updatePopup();
-        });
-        listItem.appendChild(collectButton);
-        list.appendChild(listItem);
-      });
-    };
-
-    return popupDiv;
   });
-}
 
-function movePlayer(state: GameState, deltaI: number, deltaJ: number): void {
-  const newLatLng = leaflet.latLng(
-    state.playerMarker.getLatLng().lat + deltaI * TILE_DEGREES,
-    state.playerMarker.getLatLng().lng + deltaJ * TILE_DEGREES,
+  container.querySelector(".collect-btn")?.addEventListener(
+    "click",
+    () => collectCoins(cache.cell),
+  );
+  container.querySelector(".deposit-btn")?.addEventListener(
+    "click",
+    () => depositCoins(cache.cell),
   );
 
-  state.map.setView(newLatLng);
-  state.playerMarker.setLatLng(newLatLng);
-  state.playerPath.push(newLatLng);
-  state.polyline.setLatLngs(state.playerPath);
+  return container;
+}
 
-  const { i: newI, j: newJ } = latLngToCell(newLatLng.lat, newLatLng.lng);
-  for (let di = -NEIGHBORHOOD_SIZE; di <= NEIGHBORHOOD_SIZE; di++) {
-    for (let dj = -NEIGHBORHOOD_SIZE; dj <= NEIGHBORHOOD_SIZE; dj++) {
-      const cellI = newI + di;
-      const cellJ = newJ + dj;
-      if (luck([cellI, cellJ].toString()) < CACHE_SPAWN_PROBABILITY) {
-        spawnCache(state, cellI, cellJ, cacheIcon);
+function collectCoins(cell: Cell) {
+  const cacheId = `${cell.i},${cell.j}`;
+  const cache = caches.get(cacheId);
+  if (cache && cache.coins.length > 0) {
+    playerCoins.push(...cache.coins);
+    cache.coins = [];
+    cache.marker.setPopupContent(createCachePopup(cache));
+    updateInventoryDisplay();
+    saveGameState();
+  }
+}
+
+function depositCoins(cell: Cell) {
+  const cacheId = `${cell.i},${cell.j}`;
+  const cache = caches.get(cacheId);
+  if (cache && playerCoins.length > 0) {
+    cache.coins.push(...playerCoins);
+    playerCoins = [];
+    cache.marker.setPopupContent(createCachePopup(cache));
+    updateInventoryDisplay();
+    saveGameState();
+  }
+}
+
+function updateInventoryDisplay() {
+  const inventory = document.getElementById("inventory");
+  if (inventory) {
+    const coinElements = playerCoins.map((coin) => {
+      const coinId = `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+      return `<span class="coin-id" style="cursor: pointer; text-decoration: underline;" 
+              data-lat="${coin.cell.i * TILE_DEGREES}" 
+              data-lng="${coin.cell.j * TILE_DEGREES}">${coinId}</span>`;
+    }).join(", ");
+
+    inventory.innerHTML = `Current Coins: ${coinElements}`;
+
+    inventory.querySelectorAll(".coin-id").forEach((elem) => {
+      elem.addEventListener("click", (e) => {
+        const target = e.target as HTMLElement;
+        const lat = parseFloat(target.dataset.lat || "0");
+        const lng = parseFloat(target.dataset.lng || "0");
+        map.setView([lat, lng]);
+      });
+    });
+  }
+}
+
+function generateCaches(centerLat: number, centerLng: number) {
+  for (let i = -NEIGHBORHOOD_SIZE; i <= NEIGHBORHOOD_SIZE; i++) {
+    for (let j = -NEIGHBORHOOD_SIZE; j <= NEIGHBORHOOD_SIZE; j++) {
+      const lat = centerLat + i * TILE_DEGREES;
+      const lng = centerLng + j * TILE_DEGREES;
+      const cell = latLngToCell(lat, lng);
+      const cacheId = `${cell.i},${cell.j}`;
+
+      if (
+        !caches.has(cacheId) &&
+        luck(`cache_at_${cell.i},${cell.j}`) < CACHE_SPAWN_PROBABILITY
+      ) {
+        createCache(cell, lat, lng);
       }
     }
   }
 }
 
-function resetGame(state: GameState): void {
-  const confirmation = prompt(
-    "Erase current game state? Please type 'yes' to confirm.",
-  );
-  if (confirmation === "yes") {
-    state.map.setView(OAKES_CLASSROOM);
-    state.playerMarker.setLatLng(OAKES_CLASSROOM);
-    state.playerPath.length = 0;
-    state.playerPath.push(OAKES_CLASSROOM);
-    state.polyline.setLatLngs(state.playerPath);
-    state.playerPoints = 0;
-    state.playerInventory.length = 0;
-    state.cacheCoins.clear();
-    state.directions.innerHTML = "No points accumulated.";
-    localStorage.clear();
+function loadGameState() {
+  const savedState = localStorage.getItem("gameState");
+  if (savedState) {
+    const state = JSON.parse(savedState);
+    playerLat = state.playerLat;
+    playerLng = state.playerLng;
+    playerCoins = state.playerCoins;
+    locationHistory.push(...state.locationHistory);
+
+    caches.clear();
+
+    state.caches.forEach(
+      (cacheState: { lat: number; lng: number; memento: string }) => {
+        const cell = latLngToCell(cacheState.lat, cacheState.lng);
+        const coins: Coin[] = [];
+        const cache = initializeCache(
+          cell,
+          cacheState.lat,
+          cacheState.lng,
+          coins,
+        );
+
+        cache.fromMemento(cacheState.memento);
+        caches.set(`${cell.i},${cell.j}`, cache);
+      },
+    );
+
+    playerMarker.setLatLng([playerLat, playerLng]);
+    map.setView([playerLat, playerLng]);
+    updateVisibleCaches();
+    updateInventoryDisplay();
+    drawMovementHistory();
+  } else {
+    generateCaches(playerLat, playerLng);
   }
 }
 
-// Initialization
-const state = initializeGameState();
+function saveGameState() {
+  const state = {
+    playerLat,
+    playerLng,
+    playerCoins,
+    locationHistory,
+    caches: Array.from(caches.values()).map((cache) => ({
+      lat: cache.cell.i * TILE_DEGREES,
+      lng: cache.cell.j * TILE_DEGREES,
+      memento: cache.toMemento(),
+    })),
+  };
+  localStorage.setItem("gameState", JSON.stringify(state));
+}
 
-// Example Usage
-movePlayer(state, 1, 0); // Move north
-resetGame(state); // reset
+function drawMovementHistory() {
+  if (movementHistory) {
+    map.removeLayer(movementHistory);
+  }
+  movementHistory = leaflet.polyline(locationHistory, {
+    color: "blue",
+    weight: 2,
+    opacity: 0.5,
+  }).addTo(map);
+}
+
+function updatePlayerPosition(lat: number, lng: number) {
+  playerLat = lat;
+  playerLng = lng;
+  playerMarker.setLatLng([lat, lng]);
+  map.setView([lat, lng]);
+  locationHistory.push([lat, lng]);
+  drawMovementHistory();
+  generateCaches(lat, lng);
+  updateVisibleCaches();
+  saveGameState();
+}
+
+function startLocationTracking() {
+  if ("geolocation" in navigator) {
+    locationWatcher = navigator.geolocation.watchPosition(
+      (position) => {
+        updatePlayerPosition(
+          position.coords.latitude,
+          position.coords.longitude,
+        );
+      },
+      (error) => {
+        console.error("Error getting location:", error);
+        stopLocationTracking();
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 5000,
+      },
+    );
+
+    const geolocateButton = document.getElementById("geolocate");
+    if (geolocateButton) {
+      geolocateButton.style.backgroundColor = "#646cff";
+    }
+  } else {
+    alert("Geolocation is not supported by your browser");
+  }
+}
+
+function stopLocationTracking() {
+  if (locationWatcher !== null) {
+    navigator.geolocation.clearWatch(locationWatcher);
+    locationWatcher = null;
+
+    const geolocateButton = document.getElementById("geolocate");
+    if (geolocateButton) {
+      geolocateButton.style.backgroundColor = "";
+    }
+  }
+}
+
+function resetGameState() {
+  if (
+    confirm(
+      "Reset game? This will clear all caches, coins, and player location.",
+    )
+  ) {
+    localStorage.removeItem("gameState");
+    playerLat = PLAYER_LAT;
+    playerLng = PLAYER_LNG;
+    playerCoins = [];
+    locationHistory.length = 0;
+    caches.clear();
+    if (movementHistory) {
+      map.removeLayer(movementHistory);
+      movementHistory = null;
+    }
+    stopLocationTracking();
+    generateCaches(playerLat, playerLng);
+    updateVisibleCaches();
+    updateInventoryDisplay();
+  }
+}
+
+function movePlayer(dLat: number, dLng: number) {
+  updatePlayerPosition(playerLat + dLat, playerLng + dLng);
+}
+
+function updateVisibleCaches() {
+  caches.forEach((cache, _cacheId) => {
+    const distance = Math.sqrt(
+      Math.pow(cache.cell.i * TILE_DEGREES - playerLat, 2) +
+        Math.pow(cache.cell.j * TILE_DEGREES - playerLng, 2),
+    );
+    if (distance <= NEIGHBORHOOD_SIZE * TILE_DEGREES) {
+      cache.marker.addTo(map);
+    } else {
+      map.removeLayer(cache.marker);
+    }
+  });
+}
+
+loadGameState();
+updateInventoryDisplay();
+updateVisibleCaches();
+
+function addEventListenerToElement(
+  id: string,
+  eventType: string,
+  callback: () => void,
+) {
+  const element = document.getElementById(id);
+  if (element) {
+    element.addEventListener(eventType, callback);
+  }
+}
+
+addEventListenerToElement(
+  "moveNorth",
+  "click",
+  () => movePlayer(TILE_DEGREES, 0),
+);
+addEventListenerToElement(
+  "moveSouth",
+  "click",
+  () => movePlayer(-TILE_DEGREES, 0),
+);
+addEventListenerToElement(
+  "moveWest",
+  "click",
+  () => movePlayer(0, -TILE_DEGREES),
+);
+addEventListenerToElement(
+  "moveEast",
+  "click",
+  () => movePlayer(0, TILE_DEGREES),
+);
+
+addEventListenerToElement("geolocate", "click", () => {
+  if (locationWatcher === null) {
+    startLocationTracking();
+  } else {
+    stopLocationTracking();
+  }
+});
+
+addEventListenerToElement("reset", "click", resetGameState);
