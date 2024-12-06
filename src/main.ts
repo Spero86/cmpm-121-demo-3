@@ -131,45 +131,45 @@ function createCache(cell: Cell, lat: number, lng: number) {
   cache.marker.addTo(map);
 }
 
-function createCachePopup(cache: Cache): HTMLElement {
+function renderCachePopupContent(cache: Cache): HTMLDivElement {
   const container = document.createElement("div");
-  const coinList = cache.coins.map((coin) => {
-    const coinId = `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
-    return `<span class="coin-id" style="cursor: pointer; text-decoration: underline;" 
-            data-lat="${coin.cell.i * TILE_DEGREES}" 
-            data-lng="${coin.cell.j * TILE_DEGREES}">${coinId}</span>`;
-  }).join(", ");
 
-  const content = `
-    <div>
-      <p>Cache at (${cache.cell.i}, ${cache.cell.j})</p>
-      <p>Coins: <span id="coins-${cache.cell.i}-${cache.cell.j}">${coinList}</span></p>
-      <button class="collect-btn">Collect</button>
-      <button class="deposit-btn">Deposit</button>
-    </div>
-  `;
+  // Cache location detail
+  const locationInfo = document.createElement("p");
+  locationInfo.textContent = `Cache at (${cache.cell.i}, ${cache.cell.j})`;
+  container.appendChild(locationInfo);
 
-  container.innerHTML = content;
-
-  container.querySelectorAll(".coin-id").forEach((elem) => {
-    elem.addEventListener("click", (e) => {
-      const target = e.target as HTMLElement;
-      const lat = parseFloat(target.dataset.lat || "0");
-      const lng = parseFloat(target.dataset.lng || "0");
-      map.setView([lat, lng]);
-    });
+  // Coin list
+  const coinListContainer = document.createElement("p");
+  coinListContainer.innerHTML = "Coins: ";
+  const coinListSpan = document.createElement("span");
+  coinListSpan.id = `coins-${cache.cell.i}-${cache.cell.j}`;
+  cache.coins.forEach((coin) => {
+    coinListSpan.appendChild(renderCoinElement(coin)); // Use reusable coin rendering here
+    coinListSpan.appendChild(document.createTextNode(", ")); // Add comma after each coin
   });
+  coinListContainer.appendChild(coinListSpan);
+  container.appendChild(coinListContainer);
 
-  container.querySelector(".collect-btn")?.addEventListener(
-    "click",
-    () => collectCoins(cache.cell),
-  );
-  container.querySelector(".deposit-btn")?.addEventListener(
-    "click",
-    () => depositCoins(cache.cell),
-  );
+  // Collect Button
+  const collectButton = document.createElement("button");
+  collectButton.className = "collect-btn";
+  collectButton.textContent = "Collect";
+  collectButton.addEventListener("click", () => collectCoins(cache.cell));
+  container.appendChild(collectButton);
+
+  // Deposit Button
+  const depositButton = document.createElement("button");
+  depositButton.className = "deposit-btn";
+  depositButton.textContent = "Deposit";
+  depositButton.addEventListener("click", () => depositCoins(cache.cell));
+  container.appendChild(depositButton);
 
   return container;
+}
+
+function createCachePopup(cache: Cache): HTMLElement {
+  return renderCachePopupContent(cache); // Reusable popup renderer
 }
 
 function getCacheByCell(cell: Cell): Cache | undefined {
@@ -208,25 +208,36 @@ function depositCoins(cell: Cell) {
   }
 }
 
+function renderCoinElement(coin: Coin): HTMLElement {
+  const coinId = `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
+  const coinElement = document.createElement("span");
+  coinElement.className = "coin-id";
+  coinElement.style.cursor = "pointer";
+  coinElement.style.textDecoration = "underline";
+  coinElement.dataset.lat = (coin.cell.i * TILE_DEGREES).toString();
+  coinElement.dataset.lng = (coin.cell.j * TILE_DEGREES).toString();
+  coinElement.textContent = coinId;
+
+  coinElement.addEventListener("click", () => {
+    map.setView([
+      parseFloat(coinElement.dataset.lat || "0"),
+      parseFloat(coinElement.dataset.lng || "0"),
+    ]);
+  });
+
+  return coinElement;
+}
+
 function updateInventoryDisplay() {
   const inventory = document.getElementById("inventory");
   if (inventory) {
-    const coinElements = playerCoins.map((coin) => {
-      const coinId = `${coin.cell.i}:${coin.cell.j}#${coin.serial}`;
-      return `<span class="coin-id" style="cursor: pointer; text-decoration: underline;" 
-              data-lat="${coin.cell.i * TILE_DEGREES}" 
-              data-lng="${coin.cell.j * TILE_DEGREES}">${coinId}</span>`;
-    }).join(", ");
+    // Clear existing inventory content
+    inventory.innerHTML = `Current Coins: `;
 
-    inventory.innerHTML = `Current Coins: ${coinElements}`;
-
-    inventory.querySelectorAll(".coin-id").forEach((elem) => {
-      elem.addEventListener("click", (e) => {
-        const target = e.target as HTMLElement;
-        const lat = parseFloat(target.dataset.lat || "0");
-        const lng = parseFloat(target.dataset.lng || "0");
-        map.setView([lat, lng]);
-      });
+    // Add coins dynamically
+    playerCoins.forEach((coin) => {
+      const coinElement = renderCoinElement(coin);
+      inventory.appendChild(coinElement);
     });
   }
 }
