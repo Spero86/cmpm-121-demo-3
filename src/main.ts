@@ -312,15 +312,31 @@ function drawMovementHistory() {
   }).addTo(map);
 }
 
-function updatePlayerPosition(lat: number, lng: number) {
+function setPlayerCoordinates(lat: number, lng: number) {
   playerLat = lat;
   playerLng = lng;
+}
+
+function updateMapView(lat: number, lng: number) {
   playerMarker.setLatLng([lat, lng]);
   map.setView([lat, lng]);
+}
+
+function logLocationHistory(lat: number, lng: number) {
   locationHistory.push([lat, lng]);
-  drawMovementHistory();
+}
+
+function updateCachesAndMap(lat: number, lng: number) {
   generateCaches(lat, lng);
   updateVisibleCaches();
+}
+
+function updatePlayerPosition(lat: number, lng: number) {
+  setPlayerCoordinates(lat, lng);
+  updateMapView(lat, lng);
+  logLocationHistory(lat, lng);
+  drawMovementHistory();
+  updateCachesAndMap(lat, lng);
   saveGameState();
 }
 
