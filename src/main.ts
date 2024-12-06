@@ -172,13 +172,25 @@ function createCachePopup(cache: Cache): HTMLElement {
   return container;
 }
 
-function collectCoins(cell: Cell) {
+function getCacheByCell(cell: Cell): Cache | undefined {
   const cacheId = `${cell.i},${cell.j}`;
-  const cache = caches.get(cacheId);
+  return caches.get(cacheId);
+}
+
+function transferCoinsFromCacheToPlayer(cache: Cache) {
+  playerCoins.push(...cache.coins);
+  cache.coins = [];
+}
+
+function updateCacheUI(cache: Cache) {
+  cache.marker.setPopupContent(createCachePopup(cache));
+}
+
+function collectCoins(cell: Cell) {
+  const cache = getCacheByCell(cell);
   if (cache && cache.coins.length > 0) {
-    playerCoins.push(...cache.coins);
-    cache.coins = [];
-    cache.marker.setPopupContent(createCachePopup(cache));
+    transferCoinsFromCacheToPlayer(cache);
+    updateCacheUI(cache);
     updateInventoryDisplay();
     saveGameState();
   }
